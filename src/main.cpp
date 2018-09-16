@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <cassert>
+#include <unordered_map>
 
 
 template <typename T>
@@ -60,19 +61,84 @@ public:
       throw std::runtime_error("Can't init OpenCL driver!");
   }
 
-  void choose_device();
-  void create_context();
-  void create_command_queue();
-  void create_buffers_for_input(const std::vector<float>& as, const std::vector<float>& bs);
-  void create_buffer_for_output(std::vector<float>& cs);
-  void create_program(const std::string& kernel_source);
-  void try_compile_program();
-  void create_kernel();
-  void set_kernel_args(unsigned int size);
-  void execute_kernel(std::size_t work_group_size, std::size_t global_work_size);
-  void transfer_output_buffer_to_host(std::vector<float>& cs);
+  void choose_device() {
+    device = choose_best_device_of_type(CL_DEVICE_TYPE_GPU);
+    if (!device) device = choose_best_device_of_type(CL_DEVICE_TYPE_CPU);
+    if (!device) throw std::runtime_error("No OCL device available");
+
+    std::size_t device_name_size;
+    OCL_SAFE_CALL(clGetDeviceInfo(device, CL_DEVICE_NAME, 0, nullptr, &device_name_size));
+    std::vector<char> device_name(device_name_size);
+    OCL_SAFE_CALL(clGetDeviceInfo(device, CL_DEVICE_NAME, device_name_size, device_name.data(), nullptr));
+    std::cout << "Chosen device:\t" << device_name.data() << std::endl;
+  }
+
+  void create_context() {}
+
+  void create_command_queue() {}
+
+  void create_buffers_for_input(const std::vector<float>& as, const std::vector<float>& bs) {}
+
+  void create_buffer_for_output(std::vector<float>& cs) {}
+
+  void create_program(const std::string& kernel_source) {}
+
+  void try_compile_program() {}
+
+  void create_kernel() {}
+
+  void set_kernel_args(unsigned int size) {}
+
+  void execute_kernel(std::size_t work_group_size, std::size_t global_work_size) {}
+  
+  void transfer_output_buffer_to_host(std::vector<float>& cs) {}
 
 private:
+  cl_device_id choose_best_device_of_type(cl_device_type type) {
+    std::unordered_map<cl_device_id, int> device_scores;
+
+    cl_uint num_platforms;
+    OCL_SAFE_CALL(clGetPlatformIDs(0, nullptr, &num_platforms));
+    std::vector<cl_platform_id> platforms(num_platforms);
+    OCL_SAFE_CALL(clGetPlatformIDs(num_platforms, platforms.data(), nullptr));
+
+    for (auto& platform : platforms) {
+      cl_uint num_devices;
+      OCL_SAFE_CALL(clGetDeviceIDs(platform, type, 0, nullptr, &num_devices));
+      if (num_devices > 0) {
+        std::vector<cl_device_id> devices(num_devices);
+        OCL_SAFE_CALL(clGetDeviceIDs(platform, type, num_devices, devices.data(), nullptr));
+        for (auto& candidate_device : devices)
+          device_scores.emplace(candidate_device, score_device(candidate_device));
+      }
+    }
+    
+    cl_device_id ret = nullptr;
+    int max_score = 0;
+    for (auto& pair : device_scores) {
+      cl_device_id candidate_device = pair.first;
+      int score = pair.second;
+      if (score > max_score) {
+        ret = candidate_device;
+        max_score = score;
+      }
+    }
+    return ret;
+  }
+
+  int score_device(cl_device_id device_to_score) {
+    cl_bool is_available;
+    OCL_SAFE_CALL(clGetDeviceInfo(device_to_score, CL_DEVICE_AVAILABLE, sizeof(is_available), &is_available, nullptr));
+    if (!is_available)
+      return INT_MIN;
+
+    cl_ulong global_memory_size;
+    OCL_SAFE_CALL(clGetDeviceInfo(device_to_score, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_memory_size), &global_memory_size, nullptr));
+    int global_memory_size_in_mb = static_cast<int>(global_memory_size / 1024 / 1024);
+
+    return global_memory_size_in_mb;
+  }
+
   cl_device_id device = nullptr;
   OCLObject<cl_context> context;
   OCLObject<cl_command_queue> command_queue;
