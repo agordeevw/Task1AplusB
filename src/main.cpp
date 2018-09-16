@@ -35,24 +35,11 @@ void reportError(cl_int err, const std::string &filename, int line)
 
 #define OCL_SAFE_CALL(expr) reportError(expr, __FILE__, __LINE__)
 
-namespace detail {
-  template <class T>
-  void release_ocl_object(T object) {
-    static_assert(false, "Unknown object type");
-  }
-
-  template<> void release_ocl_object<cl_context>(cl_context object) { clReleaseContext(object); }
-  template<> void release_ocl_object<cl_command_queue>(cl_command_queue object) { clReleaseCommandQueue(object); }
-  template<> void release_ocl_object<cl_mem>(cl_mem object) { clReleaseMemObject(object); }
-  template<> void release_ocl_object<cl_program>(cl_program object) { clReleaseProgram(object); }
-  template<> void release_ocl_object<cl_kernel>(cl_kernel object) { clReleaseKernel(object); }
-} // namespace detail
-
 template <class T>
 class OCLObject {
 public:
   OCLObject() : object(nullptr) {}
-  ~OCLObject() { if (object) detail::release_ocl_object<T>(object); }
+  ~OCLObject() { if (object) release(object); }
   T get() { return object; }
   void reset(T other) {
     this->~OCLObject();
@@ -60,6 +47,12 @@ public:
   }
 
 private:
+  void release(cl_context object) { clReleaseContext(object); }
+  void release(cl_command_queue object) { clReleaseCommandQueue(object); }
+  void release(cl_mem object) { clReleaseMemObject(object); }
+  void release(cl_program object) { clReleaseProgram(object); }
+  void release(cl_kernel object) { clReleaseKernel(object); }
+
   T object;
 };
 
