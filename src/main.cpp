@@ -39,7 +39,11 @@ class OCLObject {
 public:
   OCLObject() : object(nullptr) {}
   ~OCLObject() { if (object) release<T>(); }
-  T& get() { return object; }
+  T get() { return object; }
+  void reset(T other) {
+    this->~OCLObject();
+    object = other;
+  }
 
 private:
   template <class U>
@@ -73,25 +77,89 @@ public:
     std::cout << "Chosen device:\t" << device_name.data() << std::endl;
   }
 
-  void create_context() {}
+  void create_context() {
+    cl_int errcode;
+    context.reset(clCreateContext(nullptr, 1, &device, nullptr, nullptr, &errcode));
+    OCL_SAFE_CALL(errcode);
+  }
 
-  void create_command_queue() {}
+  void create_command_queue() {
+    cl_int errcode;
+    command_queue.reset(clCreateCommandQueue(context.get(), device, 0, &errcode));
+    OCL_SAFE_CALL(errcode);
+  }
 
-  void create_buffers_for_input(const std::vector<float>& as, const std::vector<float>& bs) {}
+  void create_buffers_for_input(std::vector<float>& as, std::vector<float>& bs) {
+    const std::size_t n = as.size();
+    assert(bs.size() == n);
+    
+    cl_mem_flags flag = CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR;
+    cl_int errcode;
+    as_gpu.reset(clCreateBuffer(context.get(), flag, n * sizeof(float), as.data(), &errcode));
+    OCL_SAFE_CALL(errcode);
+    bs_gpu.reset(clCreateBuffer(context.get(), flag, n * sizeof(float), bs.data(), &errcode));
+    OCL_SAFE_CALL(errcode);
+  }
 
-  void create_buffer_for_output(std::vector<float>& cs) {}
+  void create_buffer_for_output(std::vector<float>& cs) {
+    const std::size_t n = cs.size();
 
-  void create_program(const std::string& kernel_source) {}
+    cl_mem_flags flag = CL_MEM_WRITE_ONLY;
+    cl_int errcode;
+    cs_gpu.reset(clCreateBuffer(context.get(), flag, n * sizeof(float), nullptr, &errcode));
+    OCL_SAFE_CALL(errcode);
+  }
 
-  void try_compile_program() {}
+  void create_program(const std::string& kernel_source) {
+    const char* source = kernel_source.data();
+    std::size_t length = kernel_source.size();
+    cl_int errcode;
+    program.reset(clCreateProgramWithSource(context.get(), 1, &source, &length, &errcode));
+    OCL_SAFE_CALL(errcode);
+  }
 
-  void create_kernel() {}
+  void try_compile_program() {
+    cl_int errcode = clBuildProgram(program.get(), 1, &device, nullptr, nullptr, nullptr);
+    if (errcode == CL_SUCCESS || errcode == CL_BUILD_PROGRAM_FAILURE) {
+      std::size_t log_size;
+      OCL_SAFE_CALL(clGetProgramBuildInfo(program.get(), device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size));
+      std::vector<char> log(log_size);
+      OCL_SAFE_CALL(clGetProgramBuildInfo(program.get(), device, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr));
+      std::cout << "Program compilation log:\n" << log.data() << std::endl;
+      
+      if (errcode == CL_SUCCESS)
+        std::cout << "Program compilation succeeded\n" << std::endl;
 
-  void set_kernel_args(unsigned int size) {}
+      if (errcode == CL_BUILD_PROGRAM_FAILURE)
+        throw std::runtime_error("Program compilation failed");
+    }
+    OCL_SAFE_CALL(errcode);
+  }
 
-  void execute_kernel(std::size_t work_group_size, std::size_t global_work_size) {}
+  void create_kernel() {
+    cl_int errcode;
+    kernel.reset(clCreateKernel(program.get(), "aplusb", &errcode));
+    OCL_SAFE_CALL(errcode);
+  }
+
+  void set_kernel_args(unsigned int size) {
+    OCL_SAFE_CALL(clSetKernelArg(kernel.get(), 0, sizeof(cl_mem), &as_gpu));
+    OCL_SAFE_CALL(clSetKernelArg(kernel.get(), 1, sizeof(cl_mem), &bs_gpu));
+    OCL_SAFE_CALL(clSetKernelArg(kernel.get(), 2, sizeof(cl_mem), &cs_gpu));
+    OCL_SAFE_CALL(clSetKernelArg(kernel.get(), 3, sizeof(unsigned int), &size));
+  }
+
+  void execute_kernel(std::size_t global_work_size) {
+    cl_event kernel_finished_event;
+    clEnqueueNDRangeKernel(command_queue.get(), kernel.get(), 1, nullptr,
+      &global_work_size, nullptr, 0, nullptr, &kernel_finished_event);
+    clWaitForEvents(1, &kernel_finished_event);
+  }
   
-  void transfer_output_buffer_to_host(std::vector<float>& cs) {}
+  void transfer_output_buffer_to_host(std::vector<float>& cs) {
+    clEnqueueReadBuffer(command_queue.get(), cs_gpu.get(), CL_TRUE, 0,
+      sizeof(float) * cs.size(), cs.data(), 0, nullptr, nullptr);
+  }
 
 private:
   cl_device_id choose_best_device_of_type(cl_device_type type) {
@@ -258,7 +326,7 @@ try
         for (unsigned int i = 0; i < 20; ++i) {
             // clEnqueueNDRangeKernel...
             // clWaitForEvents...
-            app.execute_kernel(workGroupSize, global_work_size);
+            app.execute_kernel(global_work_size);
 
             t.nextLap(); // При вызове nextLap секундомер запоминает текущий замер (текущий круг) и начинает замерять время следующего круга
         }
@@ -313,6 +381,7 @@ try
         throw std::runtime_error("CPU and GPU results differ!");
       }
     }
+    std::cout << "CPU and GPU results are same\n";
 
     return 0;
 } catch (const std::runtime_error& e) {
