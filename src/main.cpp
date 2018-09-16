@@ -10,6 +10,7 @@
 #include <fstream>
 #include <cassert>
 #include <unordered_map>
+#include <climits>
 
 
 template <typename T>
@@ -34,11 +35,24 @@ void reportError(cl_int err, const std::string &filename, int line)
 
 #define OCL_SAFE_CALL(expr) reportError(expr, __FILE__, __LINE__)
 
+namespace detail {
+  template <class T>
+  void release_ocl_object(T object) {
+    static_assert(false, "Unknown object type");
+  }
+
+  template<> void release_ocl_object<cl_context>(cl_context object) { clReleaseContext(object); }
+  template<> void release_ocl_object<cl_command_queue>(cl_command_queue object) { clReleaseCommandQueue(object); }
+  template<> void release_ocl_object<cl_mem>(cl_mem object) { clReleaseMemObject(object); }
+  template<> void release_ocl_object<cl_program>(cl_program object) { clReleaseProgram(object); }
+  template<> void release_ocl_object<cl_kernel>(cl_kernel object) { clReleaseKernel(object); }
+} // namespace detail
+
 template <class T>
 class OCLObject {
 public:
   OCLObject() : object(nullptr) {}
-  ~OCLObject() { if (object) release<T>(); }
+  ~OCLObject() { if (object) detail::release_ocl_object<T>(object); }
   T get() { return object; }
   void reset(T other) {
     this->~OCLObject();
@@ -46,15 +60,6 @@ public:
   }
 
 private:
-  template <class U>
-  void release() { static_assert(false, "Invalid object type"); }
-
-  template<> void release<cl_context>() { clReleaseContext(object); }
-  template<> void release<cl_command_queue>() { clReleaseCommandQueue(object); }
-  template<> void release<cl_mem>() { clReleaseMemObject(object); }
-  template<> void release<cl_program>() { clReleaseProgram(object); }
-  template<> void release<cl_kernel>() { clReleaseKernel(object); }
-
   T object;
 };
 
@@ -98,7 +103,7 @@ public:
     OCL_SAFE_CALL(errcode);
 
     cl_event buffers_written[2];
-    OCL_SAFE_CALL(clEnqueueWriteBuffer(command_queue.get(), as_gpu.get(), CL_FALSE, 0, 
+    OCL_SAFE_CALL(clEnqueueWriteBuffer(command_queue.get(), as_gpu.get(), CL_FALSE, 0,
       n * sizeof(float), as, 0, nullptr, &buffers_written[0]));
     OCL_SAFE_CALL(clEnqueueWriteBuffer(command_queue.get(), bs_gpu.get(), CL_FALSE, 0,
       n * sizeof(float), bs, 0, nullptr, &buffers_written[1]));
@@ -128,7 +133,7 @@ public:
       std::vector<char> log(log_size);
       OCL_SAFE_CALL(clGetProgramBuildInfo(program.get(), device, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr));
       std::cout << "Program compilation log:\n" << log.data() << std::endl;
-      
+
       if (errcode == CL_SUCCESS)
         std::cout << "Program compilation succeeded\n" << std::endl;
 
@@ -157,7 +162,7 @@ public:
       &global_work_size, nullptr, 0, nullptr, &kernel_finished_event);
     clWaitForEvents(1, &kernel_finished_event);
   }
-  
+
   void transfer_output_buffer_to_host(float* cs, unsigned int n) {
     clEnqueueReadBuffer(command_queue.get(), cs_gpu.get(), CL_TRUE, 0,
       sizeof(float) * n, cs, 0, nullptr, nullptr);
@@ -182,7 +187,7 @@ private:
           device_scores.emplace(candidate_device, score_device(candidate_device));
       }
     }
-    
+
     cl_device_id ret = nullptr;
     int max_score = 0;
     for (auto& pair : device_scores) {
@@ -241,7 +246,7 @@ try
     // И хорошо бы сразу добавить в конце clReleaseQueue
     app.create_command_queue();
 
-    unsigned int n = 100*1000*1000;
+    unsigned int n = 100 * 1000 * 1000;
     // Создаем два массива псевдослучайных данных для сложения и массив для будущего хранения результата
     std::vector<float> as(n, 0);
     std::vector<float> bs(n, 0);
@@ -272,19 +277,19 @@ try
         if (kernel_sources.size() == 0) {
             throw std::runtime_error("Empty source file! May be you forgot to configure working directory properly?");
         }
-        std::cout 
-          << "Kernel sources:\n"
-             "-------------------------\n" 
-          << kernel_sources 
-          << "-------------------------\n"
-          << std::endl;
+        std::cout
+            << "Kernel sources:\n"
+            "-------------------------\n"
+            << kernel_sources
+            << "-------------------------\n"
+            << std::endl;
     }
 
     // TODO 7 Создайте OpenCL-подпрограмму с исходниками кернела
     // см. Runtime APIs -> Program Objects -> clCreateProgramWithSource
     // у string есть метод c_str(), но обратите внимание что передать вам нужно указатель на указатель
     app.create_program(kernel_sources);
-    
+
     // TODO 8 Теперь скомпилируйте программу и напечатайте в консоль лог компиляции
     // см. clBuildProgram
     // А так же напечатайте лог компиляции (он будет очень полезен, если в кернеле есть синтаксические ошибки - т.е. когда clBuildProgram вернет CL_BUILD_PROGRAM_FAILURE)
@@ -313,7 +318,7 @@ try
 
     // TODO 11 Выше увеличьте n с 1000*1000 до 100*1000*1000 (чтобы дальнейшие замеры были ближе к реальности)
     // (уже сделано)
-    
+
     // TODO 12 Запустите выполнения кернела:
     // - С одномерной рабочей группой размера 128
     // - В одномерном рабочем пространстве размера roundedUpN, где roundedUpN - наименьшее число кратное 128 и при этом не меньшее n
@@ -336,7 +341,7 @@ try
         // подробнее об этом - см. timer.lapsFiltered
         // P.S. чтобы в CLion быстро перейти к символу (функции/классу/много чему еще) достаточно нажать Ctrl+Shift+Alt+N -> lapsFiltered -> Enter
         std::cout << "Kernel average time: " << t.lapAvg() << "+-" << t.lapStd() << " s" << std::endl;
-        
+
         // TODO 13 Рассчитайте достигнутые гигафлопcы:
         // - Всего элементов в массивах по n штук
         // - Всего выполняется операций: операция a+b выполняется n раз
@@ -345,7 +350,7 @@ try
         // - Среднее время выполнения кернела равно t.lapAvg() секунд
         const std::size_t total_ops = n;
         const double ops_per_second = static_cast<double>(n) / t.lapAvg();
-        const double gflops = ops_per_second / 1'000'000'000.0;
+        const double gflops = ops_per_second / (1000.0 * 1000.0 * 1000.0);
         std::cout << "GFlops: " << gflops << std::endl;
 
         // TODO 14 Рассчитайте используемую пропускную способность обращений к видеопамяти (в гигабайтах в секунду)
@@ -366,28 +371,30 @@ try
         for (unsigned int i = 0; i < 20; ++i) {
             // clEnqueueReadBuffer...
             app.transfer_output_buffer_to_host(cs.data(), n);
-            
+
             t.nextLap();
         }
         std::cout << "Result data transfer time: " << t.lapAvg() << "+-" << t.lapStd() << " s" << std::endl;
 
         const std::size_t total_transfer_data_size = n * sizeof(float);
         const double transfer_rate = static_cast<double>(total_transfer_data_size) / t.lapAvg();
-        const double transfer_rate_in_gbytes = transfer_rate / 1'000'000'000.0;
+        const double transfer_rate_in_gbytes = transfer_rate / (1000.0 * 1000.0 * 1000.0);
         std::cout << "VRAM -> RAM bandwidth: " << transfer_rate_in_gbytes << " GB/s" << std::endl;
     }
 
     // TODO 16 Сверьте результаты вычислений со сложением чисел на процессоре (и убедитесь, что если в кернеле сделать намеренную ошибку, то эта проверка поймает ошибку)
     for (unsigned int i = 0; i < n; ++i) {
-      if (cs[i] != as[i] + bs[i]) {
-        throw std::runtime_error("CPU and GPU results differ!");
-      }
+        if (cs[i] != as[i] + bs[i]) {
+            throw std::runtime_error("CPU and GPU results differ!");
+        }
     }
     std::cout << "CPU and GPU results are identical\n";
 
     return 0;
-} catch (const std::runtime_error& e) {
-  std::cout << "ERROR: " << e.what() << std::endl;
-} catch (const std::bad_alloc&) {
-  std::cout << "ERROR: not enough memory, close other applications and try again" << std::endl;
+}
+catch (const std::runtime_error& e) {
+    std::cout << "ERROR: " << e.what() << std::endl;
+}
+catch (const std::bad_alloc&) {
+    std::cout << "ERROR: not enough memory, close other applications and try again" << std::endl;
 }
