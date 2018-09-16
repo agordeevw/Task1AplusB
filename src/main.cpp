@@ -89,21 +89,23 @@ public:
     OCL_SAFE_CALL(errcode);
   }
 
-  void create_buffers_for_input(std::vector<float>& as, std::vector<float>& bs) {
-    const std::size_t n = as.size();
-    assert(bs.size() == n);
-    
-    cl_mem_flags flag = CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR;
+  void create_buffers_for_input(float* as, float* bs, unsigned int n) {
+    cl_mem_flags flag = CL_MEM_READ_ONLY;
     cl_int errcode;
-    as_gpu.reset(clCreateBuffer(context.get(), flag, n * sizeof(float), as.data(), &errcode));
+    as_gpu.reset(clCreateBuffer(context.get(), flag, n * sizeof(float), nullptr, &errcode));
     OCL_SAFE_CALL(errcode);
-    bs_gpu.reset(clCreateBuffer(context.get(), flag, n * sizeof(float), bs.data(), &errcode));
+    bs_gpu.reset(clCreateBuffer(context.get(), flag, n * sizeof(float), nullptr, &errcode));
     OCL_SAFE_CALL(errcode);
+
+    cl_event buffers_written[2];
+    OCL_SAFE_CALL(clEnqueueWriteBuffer(command_queue.get(), as_gpu.get(), CL_FALSE, 0, 
+      n * sizeof(float), as, 0, nullptr, &buffers_written[0]));
+    OCL_SAFE_CALL(clEnqueueWriteBuffer(command_queue.get(), bs_gpu.get(), CL_FALSE, 0,
+      n * sizeof(float), bs, 0, nullptr, &buffers_written[1]));
+    clWaitForEvents(2, buffers_written);
   }
 
-  void create_buffer_for_output(std::vector<float>& cs) {
-    const std::size_t n = cs.size();
-
+  void create_buffer_for_output(unsigned int n) {
     cl_mem_flags flag = CL_MEM_WRITE_ONLY;
     cl_int errcode;
     cs_gpu.reset(clCreateBuffer(context.get(), flag, n * sizeof(float), nullptr, &errcode));
@@ -156,9 +158,9 @@ public:
     clWaitForEvents(1, &kernel_finished_event);
   }
   
-  void transfer_output_buffer_to_host(std::vector<float>& cs) {
+  void transfer_output_buffer_to_host(float* cs, unsigned int n) {
     clEnqueueReadBuffer(command_queue.get(), cs_gpu.get(), CL_TRUE, 0,
-      sizeof(float) * cs.size(), cs.data(), 0, nullptr, nullptr);
+      sizeof(float) * n, cs, 0, nullptr, nullptr);
   }
 
 private:
@@ -239,7 +241,7 @@ try
     // И хорошо бы сразу добавить в конце clReleaseQueue
     app.create_command_queue();
 
-    unsigned int n = 1000*1000;
+    unsigned int n = 100*1000*1000;
     // Создаем два массива псевдослучайных данных для сложения и массив для будущего хранения результата
     std::vector<float> as(n, 0);
     std::vector<float> bs(n, 0);
@@ -257,8 +259,8 @@ try
     // Данные в as и bs можно прогрузить этим же методом скопировав данные из host_ptr=as.data() (и не забыв про битовый флаг на это указывающий)
     // или же через метод Buffer Objects -> clEnqueueWriteBuffer
     // И хорошо бы сразу добавить в конце clReleaseMemObject (аналогично все дальнейшие ресурсы вроде OpenCL под-программы, кернела и т.п. тоже нужно освобождать)
-    app.create_buffers_for_input(as, bs);
-    app.create_buffer_for_output(cs);
+    app.create_buffers_for_input(as.data(), bs.data(), n);
+    app.create_buffer_for_output(n);
 
     // TODO 6 Выполните TODO 5 (реализуйте кернел в src/cl/aplusb.cl)
     // затем убедитесь что выходит загрузить его с диска (убедитесь что Working directory выставлена правильно - см. описание задания)
@@ -363,7 +365,7 @@ try
         timer t;
         for (unsigned int i = 0; i < 20; ++i) {
             // clEnqueueReadBuffer...
-            app.transfer_output_buffer_to_host(cs);
+            app.transfer_output_buffer_to_host(cs.data(), n);
             
             t.nextLap();
         }
@@ -381,7 +383,7 @@ try
         throw std::runtime_error("CPU and GPU results differ!");
       }
     }
-    std::cout << "CPU and GPU results are same\n";
+    std::cout << "CPU and GPU results are identical\n";
 
     return 0;
 } catch (const std::runtime_error& e) {
