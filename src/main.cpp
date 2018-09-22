@@ -46,7 +46,7 @@ public:
         release(object);
       }
       catch (const std::runtime_error& e) {
-        std::cerr << e.what() << std::endl;
+        std::cerr << "Error while destructing OCL object:\n" << e.what() << std::endl;
       }
     }
     object = nullptr;
