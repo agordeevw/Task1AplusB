@@ -41,8 +41,15 @@ public:
   OCLObject() : object(nullptr) {}
 
   ~OCLObject() {
-    if (object)
-      release(object);
+    if (object) {
+      try {
+        release(object);
+      }
+      catch (const std::runtime_error& e) {
+        std::cerr << e.what() << std::endl;
+      }
+    }
+    object = nullptr;
   }
 
   T get() { return object; }
@@ -422,9 +429,10 @@ void run()
 }
 
 int main() {
+  int exit_code = EXIT_FAILURE;
   try {
     run();
-    return EXIT_SUCCESS;
+    exit_code = EXIT_SUCCESS;
   }
   catch (const std::runtime_error& e) {
     std::cout << "ERROR: " << e.what() << std::endl;
@@ -433,5 +441,5 @@ int main() {
     std::cout << "ERROR: not enough memory, close other applications and try again" << std::endl;
   }
 
-  return EXIT_FAILURE;
+  return exit_code;
 }
