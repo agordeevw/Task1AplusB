@@ -9,8 +9,8 @@
 #include <stdexcept>
 #include <fstream>
 #include <cassert>
-#include <unordered_map>
 #include <climits>
+#include <algorithm>
 
 
 template <typename T>
@@ -39,19 +39,35 @@ template <class T>
 class OCLObject {
 public:
   OCLObject() : object(nullptr) {}
-  ~OCLObject() { if (object) release(object); }
+
+  ~OCLObject() {
+    if (object)
+      release(object);
+  }
+
   T get() { return object; }
+
   void reset(T other) {
     this->~OCLObject();
     object = other;
   }
 
 private:
-  void release(cl_context object) { clReleaseContext(object); }
-  void release(cl_command_queue object) { clReleaseCommandQueue(object); }
-  void release(cl_mem object) { clReleaseMemObject(object); }
-  void release(cl_program object) { clReleaseProgram(object); }
-  void release(cl_kernel object) { clReleaseKernel(object); }
+  static void release(cl_context object) {
+    OCL_SAFE_CALL(clReleaseContext(object));
+  }
+  static void release(cl_command_queue object) {
+    OCL_SAFE_CALL(clReleaseCommandQueue(object));
+  }
+  static void release(cl_mem object) {
+    OCL_SAFE_CALL(clReleaseMemObject(object));
+  }
+  static void release(cl_program object) {
+    OCL_SAFE_CALL(clReleaseProgram(object));
+  }
+  static void release(cl_kernel object) {
+    OCL_SAFE_CALL(clReleaseKernel(object));
+  }
 
   T object;
 };
@@ -65,8 +81,10 @@ public:
 
   void choose_device() {
     device = choose_best_device_of_type(CL_DEVICE_TYPE_GPU);
-    if (!device) device = choose_best_device_of_type(CL_DEVICE_TYPE_CPU);
-    if (!device) throw std::runtime_error("No OCL device available");
+    if (!device)
+      device = choose_best_device_of_type(CL_DEVICE_TYPE_CPU);
+    if (!device)
+      throw std::runtime_error("No OCL device available");
 
     std::size_t device_name_size;
     OCL_SAFE_CALL(clGetDeviceInfo(device, CL_DEVICE_NAME, 0, nullptr, &device_name_size));
@@ -100,7 +118,7 @@ public:
       n * sizeof(float), as, 0, nullptr, &buffers_written[0]));
     OCL_SAFE_CALL(clEnqueueWriteBuffer(command_queue.get(), bs_gpu.get(), CL_FALSE, 0,
       n * sizeof(float), bs, 0, nullptr, &buffers_written[1]));
-    clWaitForEvents(2, buffers_written);
+    OCL_SAFE_CALL(clWaitForEvents(2, buffers_written));
   }
 
   void create_buffer_for_output(unsigned int n) {
@@ -112,14 +130,14 @@ public:
 
   void create_program(const std::string& kernel_source) {
     const char* source = kernel_source.data();
-    std::size_t length = kernel_source.size();
+    const std::size_t length = kernel_source.size();
     cl_int errcode;
     program.reset(clCreateProgramWithSource(context.get(), 1, &source, &length, &errcode));
     OCL_SAFE_CALL(errcode);
   }
 
   void try_compile_program() {
-    cl_int errcode = clBuildProgram(program.get(), 1, &device, nullptr, nullptr, nullptr);
+    const cl_int errcode = clBuildProgram(program.get(), 1, &device, nullptr, nullptr, nullptr);
     if (errcode == CL_SUCCESS || errcode == CL_BUILD_PROGRAM_FAILURE) {
       std::size_t log_size;
       OCL_SAFE_CALL(clGetProgramBuildInfo(program.get(), device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size));
@@ -129,7 +147,6 @@ public:
 
       if (errcode == CL_SUCCESS)
         std::cout << "Program compilation succeeded\n" << std::endl;
-
       if (errcode == CL_BUILD_PROGRAM_FAILURE)
         throw std::runtime_error("Program compilation failed");
     }
@@ -151,60 +168,81 @@ public:
 
   void execute_kernel(std::size_t global_work_size) {
     cl_event kernel_finished_event;
-    clEnqueueNDRangeKernel(command_queue.get(), kernel.get(), 1, nullptr,
-      &global_work_size, nullptr, 0, nullptr, &kernel_finished_event);
-    clWaitForEvents(1, &kernel_finished_event);
+    OCL_SAFE_CALL(clEnqueueNDRangeKernel(command_queue.get(), kernel.get(), 1, 
+      nullptr, &global_work_size, nullptr, 0, nullptr, &kernel_finished_event));
+    OCL_SAFE_CALL(clWaitForEvents(1, &kernel_finished_event));
   }
 
   void transfer_output_buffer_to_host(float* cs, unsigned int n) {
-    clEnqueueReadBuffer(command_queue.get(), cs_gpu.get(), CL_TRUE, 0,
-      sizeof(float) * n, cs, 0, nullptr, nullptr);
+    OCL_SAFE_CALL(clEnqueueReadBuffer(command_queue.get(), cs_gpu.get(), 
+      CL_TRUE, 0, sizeof(float) * n, cs, 0, nullptr, nullptr));
   }
 
 private:
-  cl_device_id choose_best_device_of_type(cl_device_type type) {
-    std::unordered_map<cl_device_id, int> device_scores;
+  class ScoredDevice {
+  public:
+    ScoredDevice(cl_device_id device)
+      : device(device), score(score_device(device)) {}
 
+    cl_device_id get_device() const { return device; }
+    int get_score() const { return score; }
+
+    bool operator<(const ScoredDevice& other) const {
+      return score < other.score;
+    }
+
+  private:
+    static int score_device(cl_device_id device) {
+      cl_bool is_available;
+      OCL_SAFE_CALL(clGetDeviceInfo(device, CL_DEVICE_AVAILABLE, sizeof(is_available), &is_available, nullptr));
+      if (!is_available)
+        return INT_MIN;
+
+      cl_ulong global_memory_size;
+      OCL_SAFE_CALL(clGetDeviceInfo(device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_memory_size), &global_memory_size, nullptr));
+      int global_memory_size_in_mb = static_cast<int>(global_memory_size / 1024 / 1024);
+
+      return global_memory_size_in_mb;
+    }
+
+    cl_device_id device;
+    int score;
+  };
+
+  static cl_device_id choose_best_device_of_type(cl_device_type type) {
+    auto devices = find_all_devices_of_type(type);
+    std::vector<ScoredDevice> scored_devices;
+    for (auto device : devices)
+      scored_devices.push_back(ScoredDevice(device));
+
+    auto best_device_it = std::max_element(scored_devices.begin(), scored_devices.end());
+    constexpr int minimal_acceptable_score = 0;
+    return (best_device_it != scored_devices.end() 
+      && best_device_it->get_score() >= minimal_acceptable_score)
+      ? best_device_it->get_device()
+      : nullptr;
+  }
+
+  static std::vector<cl_device_id> find_all_devices_of_type(cl_device_type type) {
     cl_uint num_platforms;
     OCL_SAFE_CALL(clGetPlatformIDs(0, nullptr, &num_platforms));
     std::vector<cl_platform_id> platforms(num_platforms);
     OCL_SAFE_CALL(clGetPlatformIDs(num_platforms, platforms.data(), nullptr));
 
+    std::vector<cl_device_id> devices;
     for (auto& platform : platforms) {
       cl_uint num_devices;
-      OCL_SAFE_CALL(clGetDeviceIDs(platform, type, 0, nullptr, &num_devices));
-      if (num_devices > 0) {
-        std::vector<cl_device_id> devices(num_devices);
-        OCL_SAFE_CALL(clGetDeviceIDs(platform, type, num_devices, devices.data(), nullptr));
-        for (auto& candidate_device : devices)
-          device_scores.emplace(candidate_device, score_device(candidate_device));
+      const cl_int errcode = clGetDeviceIDs(platform, type, 0, nullptr, &num_devices);
+      if (errcode == CL_SUCCESS) {
+        const auto old_size = devices.size();
+        devices.resize(devices.size() + num_devices);
+        OCL_SAFE_CALL(clGetDeviceIDs(platform, type, num_devices, &devices[old_size], nullptr));
+      } else if (errcode != CL_DEVICE_NOT_FOUND) {
+        OCL_SAFE_CALL(errcode);
       }
     }
 
-    cl_device_id ret = nullptr;
-    int max_score = 0;
-    for (auto& pair : device_scores) {
-      cl_device_id candidate_device = pair.first;
-      int score = pair.second;
-      if (score > max_score) {
-        ret = candidate_device;
-        max_score = score;
-      }
-    }
-    return ret;
-  }
-
-  int score_device(cl_device_id device_to_score) {
-    cl_bool is_available;
-    OCL_SAFE_CALL(clGetDeviceInfo(device_to_score, CL_DEVICE_AVAILABLE, sizeof(is_available), &is_available, nullptr));
-    if (!is_available)
-      return INT_MIN;
-
-    cl_ulong global_memory_size;
-    OCL_SAFE_CALL(clGetDeviceInfo(device_to_score, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_memory_size), &global_memory_size, nullptr));
-    int global_memory_size_in_mb = static_cast<int>(global_memory_size / 1024 / 1024);
-
-    return global_memory_size_in_mb;
+    return devices;
   }
 
   cl_device_id device = nullptr;
@@ -383,11 +421,13 @@ try
     }
     std::cout << "CPU and GPU results are identical\n";
 
-    return 0;
+    return EXIT_SUCCESS;
 }
 catch (const std::runtime_error& e) {
     std::cout << "ERROR: " << e.what() << std::endl;
+    return EXIT_FAILURE;
 }
 catch (const std::bad_alloc&) {
     std::cout << "ERROR: not enough memory, close other applications and try again" << std::endl;
+    return EXIT_FAILURE;
 }
