@@ -255,8 +255,7 @@ private:
   OCLObject<cl_kernel> kernel;
 };
 
-int main()
-try
+void run()
 {
     OCLTaskApp app;
 
@@ -420,14 +419,19 @@ try
         }
     }
     std::cout << "CPU and GPU results are identical\n";
+}
 
+int main() {
+  try {
+    run();
     return EXIT_SUCCESS;
-}
-catch (const std::runtime_error& e) {
+  }
+  catch (const std::runtime_error& e) {
     std::cout << "ERROR: " << e.what() << std::endl;
-    return EXIT_FAILURE;
-}
-catch (const std::bad_alloc&) {
+  }
+  catch (const std::bad_alloc&) {
     std::cout << "ERROR: not enough memory, close other applications and try again" << std::endl;
-    return EXIT_FAILURE;
+  }
+
+  return EXIT_FAILURE;
 }
